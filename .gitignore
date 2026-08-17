@@ -1,0 +1,15 @@
+# Swift Package Manager build products
+.build/
+
+# Local Python environment
+.venv/
+
+# macOS and Xcode per-user state
+.DS_Store
+**/.DS_Store
+*.xcuserstate
+xcuserdata/
+
+# Editor and temporary files
+*.swp
+*.tmp
