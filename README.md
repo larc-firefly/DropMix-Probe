@@ -19,6 +19,23 @@ over Bluetooth LE using CoreBluetooth.
 - Appends every event (discovery, connect, value update, disconnect) to a
   timestamped JSONL capture file under `captures/`.
 
+## Native board monitor
+
+Run the basic macOS status UI with:
+
+```bash
+swift run DropMixBLEProbe ui
+```
+
+It shows the Bluetooth connection stages, a rolling activity log, discovered
+nearby devices, and five DropMix-style slots. The UI never connects until you
+click **Connect** for a listed device and it never writes to the board.
+
+The slots use blue while card data is waiting, orange when protected GATT
+access needs pairing/authentication, and green only after a future validated
+card decoder reports a card. The current evidence cannot yet decode RFID
+presence reliably, so the UI does not invent a card state.
+
 ## LED test command
 
 `list` and `capture` remain read-only. The separate colour-test commands are

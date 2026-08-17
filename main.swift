@@ -27,6 +27,10 @@
 //   swift run DropMixBLEProbe pair <bluetooth-address>
 //       Explicitly ask macOS to pair with the board using a freshly observed
 //       Bluetooth address (not its CoreBluetooth peripheral UUID).
+//
+//   swift run DropMixBLEProbe ui
+//       Open the native read-only board monitor. Select a discovered device
+//       explicitly before it connects.
 
 import Foundation
 
@@ -43,6 +47,7 @@ func printUsageAndExit() -> Never {
       swift run DropMixBLEProbe pair <bluetooth-address>
       swift run DropMixBLEProbe light-blue <peripheral-uuid>
       swift run DropMixBLEProbe light-green <peripheral-uuid>
+      swift run DropMixBLEProbe ui
     """)
     exit(1)
 }
@@ -52,6 +57,12 @@ guard arguments.count >= 2 else {
 }
 
 let command = arguments[1]
+
+if command == "ui" {
+    runDropMixDashboard()
+    exit(0)
+}
+
 let probe: BoardProbe
 
 switch command {
