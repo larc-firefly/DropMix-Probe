@@ -1,5 +1,6 @@
 import AppKit
 import CoreBluetooth
+import IOBluetooth
 import SwiftUI
 
 /// A small, deliberately read-only control surface for the DropMix board.
@@ -12,6 +13,7 @@ final class DropMixDashboardModel: NSObject, ObservableObject {
         case waiting = "Waiting for Bluetooth"
         case scanning = "Scanning for DropMix"
         case connecting = "Connecting"
+        case pairing = "Pairing with macOS"
         case discovering = "Discovering board services"
         case authenticationRequired = "Pairing / authentication required"
         case ready = "Connected"
@@ -24,6 +26,7 @@ final class DropMixDashboardModel: NSObject, ObservableObject {
             case .waiting, .disconnected: .secondary
             case .scanning: .blue
             case .connecting, .discovering: .cyan
+            case .pairing: .purple
             case .authenticationRequired: .orange
             case .ready: .green
             }
@@ -63,11 +66,19 @@ final class DropMixDashboardModel: NSObject, ObservableObject {
     @Published private(set) var eventLog: [String] = []
     @Published private(set) var slots = Array(repeating: SlotState.waiting, count: 5)
     @Published private(set) var connectedBoardName: String?
+    @Published var pairingAddress = ""
 
     private var central: CBCentralManager!
     private var peripherals: [UUID: CBPeripheral] = [:]
     private var connectedPeripheral: CBPeripheral?
-    private var didProbeProtectedAccess = false
+    private var pairingAttempt: IOBluetoothDevicePair?
+    private var pendingSubscriptions = Set<CBUUID>()
+
+    private static let subscriptionOrder = [
+        CBUUID(string: "0003CFD4-2730-4BB8-B160-502596E4C2FE"),
+        CBUUID(string: "0005CFD4-2730-4BB8-B160-502596E4C2FE"),
+        CBUUID(string: "0004CFD4-2730-4BB8-B160-502596E4C2FE")
+    ]
 
     override init() {
         super.init()
@@ -93,7 +104,7 @@ final class DropMixDashboardModel: NSObject, ObservableObject {
         guard let peripheral = peripherals[candidate.id] else { return }
         central.stopScan()
         connectedPeripheral = peripheral
-        didProbeProtectedAccess = false
+        pendingSubscriptions.removeAll()
         connectedBoardName = candidate.name
         connectionState = .connecting
         slots = Array(repeating: .waiting, count: 5)
@@ -104,6 +115,35 @@ final class DropMixDashboardModel: NSObject, ObservableObject {
     func disconnect() {
         guard let connectedPeripheral else { return }
         central.cancelPeripheralConnection(connectedPeripheral)
+    }
+
+    /// CoreBluetooth cannot create a BLE bond. This public macOS API is an
+    /// explicit, one-shot bridge that requires a freshly observed Bluetooth
+    /// address rather than a CoreBluetooth peripheral identifier.
+    func pairUsingAddress() {
+        let address = pairingAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Self.isValidBluetoothAddress(address) else {
+            connectionState = .failed
+            addEvent("Enter a Bluetooth address in the form AA:BB:CC:DD:EE:FF. This is not the CoreBluetooth UUID.")
+            return
+        }
+        guard let device = IOBluetoothDevice(addressString: address),
+              let attempt = IOBluetoothDevicePair(device: device) else {
+            connectionState = .failed
+            addEvent("macOS could not create a pairing target for \(address).")
+            return
+        }
+        attempt.delegate = self
+        pairingAttempt = attempt
+        let result = attempt.start()
+        guard result == kIOReturnSuccess else {
+            pairingAttempt = nil
+            connectionState = .failed
+            addEvent("macOS could not start pairing (IOReturn \(result)).")
+            return
+        }
+        connectionState = .pairing
+        addEvent("Requested macOS pairing with \(address). Respond to any system prompt, then reconnect the selected board.")
     }
 
     func shutdown() {
@@ -122,6 +162,10 @@ final class DropMixDashboardModel: NSObject, ObservableObject {
         connectionState = .authenticationRequired
         slots = Array(repeating: .blocked, count: 5)
         addEvent(message)
+    }
+
+    private static func isValidBluetoothAddress(_ address: String) -> Bool {
+        address.range(of: "^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$", options: .regularExpression) != nil
     }
 }
 
@@ -201,14 +245,19 @@ extension DropMixDashboardModel: @preconcurrency CBPeripheralDelegate {
             addEvent("Characteristic discovery failed: \(error!.localizedDescription)")
             return
         }
-        for characteristic in service.characteristics ?? [] {
-            // A single safe protected read reports whether the OS already has
-            // a usable encrypted/bonded link. No board values are written.
-            if characteristic.uuid == ReportedUUIDs.authenticationProbe, !didProbeProtectedAccess {
-                didProbeProtectedAccess = true
-                addEvent("Checking protected board access…")
-                peripheral.readValue(for: characteristic)
-            }
+        guard service.uuid == ReportedUUIDs.boardService else { return }
+        let characteristics = service.characteristics ?? []
+        let byUUID = Dictionary(uniqueKeysWithValues: characteristics.map { ($0.uuid, $0) })
+        let subscriptionTargets = Self.subscriptionOrder.compactMap { byUUID[$0] }
+        guard subscriptionTargets.count == Self.subscriptionOrder.count else {
+            connectionState = .failed
+            addEvent("The board is missing one or more expected notification characteristics.")
+            return
+        }
+        pendingSubscriptions = Set(subscriptionTargets.map(\.uuid))
+        addEvent("Subscribing to board indications (0003, 0005, 0004)…")
+        for characteristic in subscriptionTargets {
+            peripheral.setNotifyValue(true, for: characteristic)
         }
     }
 
@@ -227,10 +276,67 @@ extension DropMixDashboardModel: @preconcurrency CBPeripheralDelegate {
             }
             return
         }
-        if characteristic.uuid == ReportedUUIDs.authenticationProbe {
-            connectionState = .ready
-            addEvent("Protected GATT access confirmed. Card notifications are ready for decoder support.")
+        if Self.subscriptionOrder.contains(characteristic.uuid) {
+            let hex = (characteristic.value ?? Data()).map { String(format: "%02X", $0) }.joined(separator: " ")
+            addEvent("Received board data from \(characteristic.uuid.uuidString.prefix(4)): \(hex.isEmpty ? "empty" : hex)")
         }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral,
+                    didUpdateNotificationStateFor characteristic: CBCharacteristic,
+                    error: Error?) {
+        guard Self.subscriptionOrder.contains(characteristic.uuid) else { return }
+        if let error {
+            let nsError = error as NSError
+            if nsError.domain == CBATTErrorDomain,
+               let code = CBATTError.Code(rawValue: nsError.code),
+               code == .insufficientAuthentication || code == .insufficientEncryption {
+                setAuthenticationRequired("Board indications are protected. Pair the board with macOS, then reconnect.")
+            } else {
+                connectionState = .failed
+                addEvent("Subscription failed for \(characteristic.uuid.uuidString): \(error.localizedDescription)")
+            }
+            return
+        }
+        pendingSubscriptions.remove(characteristic.uuid)
+        addEvent("Subscribed to \(characteristic.uuid.uuidString.prefix(4)) indications.")
+        if pendingSubscriptions.isEmpty {
+            connectionState = .ready
+            addEvent("Board connection ready. Waiting for validated card data.")
+        }
+    }
+}
+
+extension DropMixDashboardModel: @preconcurrency IOBluetoothDevicePairDelegate {
+    func devicePairingStarted(_ sender: Any!) {
+        addEvent("macOS pairing started.")
+    }
+
+    func devicePairingConnecting(_ sender: Any!) {
+        addEvent("macOS pairing is connecting.")
+    }
+
+    func devicePairingConnected(_ sender: Any!) {
+        addEvent("macOS pairing connected.")
+    }
+
+    func devicePairingPINCodeRequest(_ sender: Any!) {
+        addEvent("macOS requested a PIN. The app will not guess or submit one.")
+    }
+
+    func devicePairingUserConfirmationRequest(_ sender: Any!, numericValue: BluetoothNumericValue) {
+        addEvent("Confirm the macOS pairing number \(numericValue) if it is shown.")
+    }
+
+    func devicePairingFinished(_ sender: Any!, error: IOReturn) {
+        if error == kIOReturnSuccess {
+            connectionState = .disconnected
+            addEvent("Pairing completed. Click Connect for the selected DropMix board.")
+        } else {
+            connectionState = .failed
+            addEvent("Pairing finished with IOReturn \(error). The board address may have rotated or be unreachable.")
+        }
+        pairingAttempt = nil
     }
 }
 
@@ -306,6 +412,21 @@ private struct DropMixDashboardView: View {
                     Button("Disconnect") { model.disconnect() }
                 }
             }
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Pair board with macOS")
+                    .font(.headline)
+                Text("Enter a freshly observed Bluetooth address, not the CoreBluetooth UUID shown by scanning. Pairing is required before protected board indications can be used.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    TextField("AA:BB:CC:DD:EE:FF", text: $model.pairingAddress)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Pair") { model.pairUsingAddress() }
+                        .buttonStyle(.bordered)
+                }
+            }
+            Divider()
             if model.candidates.isEmpty {
                 Text("No DropMix board found yet. Make sure the board is on, then scan again.")
                     .foregroundStyle(.secondary)

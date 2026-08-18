@@ -36,6 +36,12 @@ access needs pairing/authentication, and green only after a future validated
 card decoder reports a card. The current evidence cannot yet decode RFID
 presence reliably, so the UI does not invent a card state.
 
+The dashboard follows the verified original Android sequence: connect, create
+an OS Bluetooth bond, discover services, then subscribe to `0003`, `0005`, and
+`0004`. It never sends the Android app's LED-control writes. On macOS, the
+public pairing API needs a freshly observed Bluetooth hardware address in the
+form `AA:BB:CC:DD:EE:FF`; a CoreBluetooth peripheral UUID cannot create a bond.
+
 ## LED test command
 
 `list` and `capture` remain read-only. The separate colour-test commands are
