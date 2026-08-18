@@ -106,6 +106,12 @@ final class DropMixDashboardModel: NSObject, ObservableObject {
         central.cancelPeripheralConnection(connectedPeripheral)
     }
 
+    func shutdown() {
+        central.stopScan()
+        disconnect()
+        addEvent("Stopping Bluetooth activity.")
+    }
+
     private func addEvent(_ text: String) {
         let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
         eventLog.insert("\(timestamp)  \(text)", at: 0)
@@ -136,8 +142,11 @@ extension DropMixDashboardModel: @preconcurrency CBCentralManagerDelegate {
         let name = peripheral.name
             ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
             ?? "Unnamed BLE device"
-        // Do not connect automatically. The broad list helps identify boards
-        // whose advertisement does not include their product name.
+        // The dashboard is intentionally focused on the board, not every BLE
+        // device nearby. DropMix boards observed so far advertise this name.
+        guard name.localizedCaseInsensitiveContains("dropmix") else { return }
+        // Do not connect automatically; the user still explicitly selects a
+        // discovered board before any connection is made.
         peripherals[peripheral.identifier] = peripheral
         let candidate = Candidate(id: peripheral.identifier, name: name, rssi: RSSI.intValue)
         if let index = candidates.firstIndex(where: { $0.id == candidate.id }) {
@@ -229,14 +238,17 @@ private struct DropMixDashboardView: View {
     @ObservedObject var model: DropMixDashboardModel
 
     var body: some View {
-        VStack(spacing: 20) {
-            header
-            board
-            connectionPanel
-            eventPanel
+        ScrollView {
+            VStack(spacing: 20) {
+                header
+                board
+                connectionPanel
+                eventPanel
+            }
+            .padding(24)
+            .frame(minWidth: 760, alignment: .top)
         }
-        .padding(24)
-        .frame(minWidth: 760, minHeight: 680)
+        .frame(minWidth: 760, minHeight: 680, alignment: .top)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -295,7 +307,7 @@ private struct DropMixDashboardView: View {
                 }
             }
             if model.candidates.isEmpty {
-                Text("No devices found yet. Make sure the board is on, then scan again.")
+                Text("No DropMix board found yet. Make sure the board is on, then scan again.")
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(model.candidates) { candidate in
@@ -335,6 +347,7 @@ private struct DropMixDashboardView: View {
 
 final class DropMixDashboardAppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
+    private var model: DropMixDashboardModel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let model = DropMixDashboardModel()
@@ -350,6 +363,15 @@ final class DropMixDashboardAppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         self.window = window
+        self.model = model
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        model?.shutdown()
     }
 }
 
