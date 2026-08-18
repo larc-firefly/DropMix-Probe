@@ -16,7 +16,7 @@ final class DropMixDashboardModel: NSObject, ObservableObject {
         case pairing = "Pairing with macOS"
         case discovering = "Discovering board services"
         case authenticationRequired = "Pairing / authentication required"
-        case ready = "Connected"
+        case awaitingBoardResponse = "Awaiting board protocol data"
         case disconnected = "Disconnected"
         case failed = "Connection failed"
 
@@ -27,8 +27,7 @@ final class DropMixDashboardModel: NSObject, ObservableObject {
             case .scanning: .blue
             case .connecting, .discovering: .cyan
             case .pairing: .purple
-            case .authenticationRequired: .orange
-            case .ready: .green
+            case .authenticationRequired, .awaitingBoardResponse: .orange
             }
         }
     }
@@ -278,7 +277,7 @@ extension DropMixDashboardModel: @preconcurrency CBPeripheralDelegate {
         }
         if Self.subscriptionOrder.contains(characteristic.uuid) {
             let hex = (characteristic.value ?? Data()).map { String(format: "%02X", $0) }.joined(separator: " ")
-            addEvent("Received board data from \(characteristic.uuid.uuidString.prefix(4)): \(hex.isEmpty ? "empty" : hex)")
+            addEvent("Received board packet from \(characteristic.uuid.uuidString.prefix(4)): \(hex.isEmpty ? "empty" : hex). No card state inferred until the protocol is decoded.")
         }
     }
 
@@ -301,8 +300,8 @@ extension DropMixDashboardModel: @preconcurrency CBPeripheralDelegate {
         pendingSubscriptions.remove(characteristic.uuid)
         addEvent("Subscribed to \(characteristic.uuid.uuidString.prefix(4)) indications.")
         if pendingSubscriptions.isEmpty {
-            connectionState = .ready
-            addEvent("Board connection ready. Waiting for validated card data.")
+            connectionState = .awaitingBoardResponse
+            addEvent("GATT transport is subscribed. The original app now waits for board-protocol data/status/button packets; no payload is guessed or sent.")
         }
     }
 }
@@ -393,7 +392,7 @@ private struct DropMixDashboardView: View {
                     .frame(maxWidth: .infinity)
                 }
             }
-            Text("Blue: waiting for card data  •  Orange: board needs pairing  •  Green: decoded card present")
+            Text("Blue: waiting for card data  •  Orange: pairing or board-protocol response needed  •  Green: decoded card present")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -408,7 +407,7 @@ private struct DropMixDashboardView: View {
                     .font(.headline)
                 Spacer()
                 Button("Scan again") { model.startScanning() }
-                if model.connectionState == .connecting || model.connectionState == .discovering || model.connectionState == .ready || model.connectionState == .authenticationRequired {
+                if model.connectionState == .connecting || model.connectionState == .discovering || model.connectionState == .awaitingBoardResponse || model.connectionState == .authenticationRequired {
                     Button("Disconnect") { model.disconnect() }
                 }
             }

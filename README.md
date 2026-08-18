@@ -7,6 +7,12 @@ This does **not** depend on the discontinued DropMix app, DropMix servers,
 music playback, or new RFID card manufacture. It talks directly to the board
 over Bluetooth LE using CoreBluetooth.
 
+## Connection protocol reference
+
+The evidence-backed GATT layout, Android bonding flow, macOS limitations,
+observed packet examples, and remaining unknowns are maintained in
+[docs/PROTOCOL_NOTES.md](docs/PROTOCOL_NOTES.md).
+
 ## What this tool does
 
 - Scans for nearby BLE peripherals and lists them (`list` mode).
@@ -166,7 +172,7 @@ DropMixBLEProbe/
 ├── PacketCapture.swift     # JSONL capture writer
 ├── KnownUUIDs.swift        # Unverified reported UUIDs, for annotation only
 ├── captures/                # Raw JSONL captures (versioned evidence)
-└── PROTOCOL_NOTES.md        # GATT topology + decoding hypotheses log
+└── docs/PROTOCOL_NOTES.md   # Connection and protocol reference
 ```
 
 ## Incremental plan (from the project brief)
